@@ -1064,41 +1064,91 @@ void Solver::dump_cnf () {
 
 /*------------------------------------------------------------------------*/
 
+class ClauseIteratorDecorator : public ClauseGlueIterator {
+public:
+  ClauseIteratorDecorator (ClauseIterator* clause_iterator) :
+    decoratee(clause_iterator){}
+
+  bool clause (const std::vector<int>& clause, int) {
+    return decoratee->clause(clause);
+  }
+
+private:
+  ClauseIterator* decoratee;
+};
+
 bool Solver::traverse_clauses (ClauseIterator & it) const {
-  LOG_API_CALL_BEGIN ("traverse_clauses");
+  ClauseIteratorDecorator clause_glue_iterator(&it);
+  return traverse_irredundant_clauses(clause_glue_iterator, true, false);
+}
+
+bool Solver::traverse_irredundant_clauses (ClauseGlueIterator & it,
+                                           bool exclude_unfrozen_units,
+                                           bool log_simplifications_in_proof)
+                                           const {
+  LOG_API_CALL_BEGIN ("traverse_irredundant_clauses");
   REQUIRE_VALID_STATE ();
-  bool res = external->traverse_all_frozen_units_as_clauses (it) &&
-             internal->traverse_clauses (it);
-  LOG_API_CALL_RETURNS ("traverse_clauses", res);
+  bool res = true;
+
+  if(exclude_unfrozen_units) {
+    res = external->traverse_all_frozen_units_as_clauses(it);
+  } else {
+    res = external->traverse_all_units_as_clauses(it);
+  }
+
+  if(res) res = internal->traverse_clauses(it,
+                                           true,
+                                           false,
+                                           log_simplifications_in_proof);
+
+  LOG_API_CALL_RETURNS ("traverse_irredundant_clauses", res);
   return res;
 }
 
-bool Solver::traverse_witnesses_backward (WitnessIterator & it) const {
+bool Solver::traverse_redundant_clauses(ClauseGlueIterator & it,
+                                        bool log_simplifications_in_proof) const {
+  LOG_API_CALL_BEGIN ("traverse_redundant_clauses");
+  REQUIRE_VALID_STATE ();
+  bool res = internal->traverse_clauses(
+    it, false, true,
+    log_simplifications_in_proof);
+  LOG_API_CALL_RETURNS ("traverse_redundant_clauses", res);
+  return res;
+}
+
+bool Solver::traverse_witnesses_backward (WitnessIterator & it,
+                                          bool include_unfrozen_units) const {
   LOG_API_CALL_BEGIN ("traverse_witnesses_backward");
   REQUIRE_VALID_STATE ();
-  bool res = external->traverse_all_non_frozen_units_as_witnesses (it) &&
-             external->traverse_witnesses_backward (it);
+  bool res = true;
+  if(include_unfrozen_units) {
+    res = external->traverse_all_non_frozen_units_as_witnesses (it);
+  }
+  if(res) res = external->traverse_witnesses_backward (it);
   LOG_API_CALL_RETURNS ("traverse_witnesses_backward", res);
   return res;
 }
 
-bool Solver::traverse_witnesses_forward (WitnessIterator & it) const {
+bool Solver::traverse_witnesses_forward (WitnessIterator & it,
+                                         bool include_unfrozen_units) const {
   LOG_API_CALL_BEGIN ("traverse_witnesses_forward");
   REQUIRE_VALID_STATE ();
-  bool res = external->traverse_witnesses_forward (it) &&
-             external->traverse_all_non_frozen_units_as_witnesses (it);
+  bool res = external->traverse_witnesses_forward (it);
+  if(res && include_unfrozen_units) {
+    res = external->traverse_all_non_frozen_units_as_witnesses(it);
+  }
   LOG_API_CALL_RETURNS ("traverse_witnesses_forward", res);
   return res;
 }
 
 /*------------------------------------------------------------------------*/
 
-class ClauseCounter : public ClauseIterator {
+class ClauseCounter : public ClauseGlueIterator {
 public:
   int vars;
   int64_t clauses;
   ClauseCounter () : vars (0), clauses (0) { }
-  bool clause (const vector<int> & c) {
+  virtual bool clause (const vector<int> & c, int) {
     for (const auto & lit : c) {
       assert (lit != INT_MIN);
       int idx = abs (lit);
@@ -1109,11 +1159,11 @@ public:
   }
 };
 
-class ClauseWriter : public ClauseIterator {
+class DimacsClauseWriter : public ClauseGlueIterator {
   File * file;
 public:
-  ClauseWriter (File * f) : file (f) { }
-  bool clause (const vector<int> & c) {
+  DimacsClauseWriter (File * f) : file (f) { }
+  virtual bool clause (const vector<int> & c, int) {
     for (const auto & lit : c) {
       if (!file->put (lit)) return false;
       if (!file->put (' ')) return false;
@@ -1122,7 +1172,69 @@ public:
   }
 };
 
-const char * Solver::write_dimacs (const char * path, int min_max_var) {
+inline bool put_binary_lit(File* file, int lit) {
+  assert (file);
+  assert (lit != INT_MIN);
+  unsigned x = 2*abs (lit) + (lit < 0);
+  unsigned char ch;
+  while (x & ~0x7f) {
+    ch = (x & 0x7f) | 0x80;
+    file->put (ch);
+    x >>= 7;
+  }
+  ch = x;
+  file->put (ch);
+  return true;
+}
+
+class BinaryClauseWriter : public ClauseGlueIterator {
+  File* file;
+public:
+  BinaryClauseWriter (File * f) : file(f) { }
+
+  virtual bool clause (const vector<int> & c, int) {
+    for (const auto & lit : c) {
+      if (!put_binary_lit(file, lit)) return false;
+    }
+    return file->put (static_cast<char>(0));
+  }
+};
+
+class PlainRedundantClauseWriter : public ClauseGlueIterator {
+  File * file;
+public:
+  PlainRedundantClauseWriter (File * f) : file (f) { }
+
+  virtual bool clause (const vector<int> & c, int glue) {
+    for (const auto & lit : c) {
+      if (!file->put (lit)) return false;
+      if (!file->put (' ')) return false;
+    }
+    if(!file->put("0 ")) return false;
+    if(!file->put(glue) || !file->put(' ')) return false;
+    return file->put ("0\n");
+  }
+};
+
+class BinaryRedundantClauseWriter : public ClauseGlueIterator {
+  File* file;
+public:
+  BinaryRedundantClauseWriter (File * f) : file(f) { }
+
+  bool clause (const vector<int> & c, int glue) {
+    for (const auto & lit : c) {
+      if (!put_binary_lit(file, lit)) return false;
+    }
+    if(!file->put(static_cast<char>(0))) return false;
+    return put_binary_lit(file, glue);
+  }
+};
+
+const char * Solver::write_dimacs (const char * path,
+                                   int min_max_var,
+                                   bool exclude_unfrozen_units,
+                                   bool log_simplifications_in_proof,
+                                   bool is_binary) {
   LOG_API_CALL_BEGIN ("write_dimacs", path, min_max_var);
   REQUIRE_VALID_STATE ();
 #ifndef QUIET
@@ -1130,38 +1242,199 @@ const char * Solver::write_dimacs (const char * path, int min_max_var) {
 #endif
   internal->restore_clauses ();
   ClauseCounter counter;
-  (void) traverse_clauses (counter);
+  (void) traverse_irredundant_clauses (counter, exclude_unfrozen_units);
   LOG ("found maximal variable %d and %" PRId64 " clauses",
     counter.vars, counter.clauses);
   File * file = File::write (internal, path);
   const char * res = 0;
   if (file) {
     int actual_max_vars = max (min_max_var, counter.vars);
-    MSG ("writing %s'p cnf %d %" PRId64 "'%s header",
-      tout.green_code (), actual_max_vars, counter.clauses,
-      tout.normal_code ());
-    file->put ("p cnf ");
-    file->put (actual_max_vars);
-    file->put (' ');
-    file->put (counter.clauses);
-    file->put ('\n');
-    ClauseWriter writer (file);
-    if (!traverse_clauses (writer))
+    // no smart pointer here to stay consistent with the rest of the code base
+    ClauseGlueIterator* writer;
+    if(is_binary) {
+      writer = new BinaryClauseWriter(file);
+      if(counter.clauses > 0) {
+        file->put(static_cast<char>(0)); // mark file as binary
+      }
+    } else {
+      writer = new DimacsClauseWriter (file);
+      MSG ("writing %s'p cnf %d %" PRId64 "'%s header",
+           tout.green_code(), actual_max_vars, counter.clauses,
+           tout.normal_code());
+      file->put("p cnf ");
+      file->put(actual_max_vars);
+      file->put(' ');
+      file->put(counter.clauses);
+      file->put('\n');
+    }
+    if (!traverse_irredundant_clauses (*writer, exclude_unfrozen_units,
+                                       log_simplifications_in_proof))
       res = internal->error_message.init (
               "writing to DIMACS file '%s' failed", path);
+    delete writer;
     delete file;
   } else res = internal->error_message.init (
                  "failed to open DIMACS file '%s' for writing", path);
 #ifndef QUIET
   if (!res) {
     const double end = internal->time ();
-    MSG ("wrote %" PRId64 " clauses in %.2f seconds %s time",
-      counter.clauses, end - start,
+    MSG ("wrote %" PRId64 " %s clauses in %.2f seconds %s time",
+      counter.clauses,
+      is_binary ? "binary-format" : "plain-text",
+      end - start,
       internal->opts.realtime ? "real" : "process");
   }
 #endif
   LOG_API_CALL_RETURNS ("write_dimacs", path, min_max_var, res);
   return res;
+}
+
+const char * Solver::write_learned_clauses (const char * path,
+                                            bool log_simplifications_in_proof,
+                                            bool is_binary) {
+  LOG_API_CALL_BEGIN ("write_learned_clauses", path);
+  REQUIRE_VALID_STATE ();
+#ifndef QUIET
+  const double start = internal->time ();
+#endif
+  ClauseCounter counter;
+  (void) traverse_redundant_clauses(counter);
+  File * file = File::write (internal, path);
+  const char * res = 0;
+  if (file) {
+    // no smart pointer here to stay consistent with the rest of the code base
+    ClauseGlueIterator* writer;
+    if(is_binary) {
+      writer = new BinaryRedundantClauseWriter(file);
+      if(counter.clauses > 0) {
+        file->put(static_cast<char>(0)); // mark file as binary
+      }
+    } else {
+      writer = new PlainRedundantClauseWriter(file);
+    }
+    if(!traverse_redundant_clauses(*writer, log_simplifications_in_proof)){
+      res = internal->error_message.init (
+        "writing to file '%s' failed", path);
+    }
+    delete writer;
+    delete file;
+  } else {
+    res = internal->error_message.init(
+      "failed to open file '%s' for writing", path);
+  }
+#ifndef QUIET
+  if (!res) {
+    const double end = internal->time ();
+    MSG ("wrote %" PRId64 " %s clauses in %.2f seconds %s time",
+         counter.clauses,
+         is_binary ? "binary-format" : "plain-text",
+         end - start,
+         internal->opts.realtime ? "real" : "process");
+  }
+#endif
+  LOG_API_CALL_RETURNS ("write_learned_clauses", path);
+  return res;
+}
+
+const char * Solver::read_irredundant_clauses(const char *path, int &vars) {
+  LOG_API_CALL_BEGIN ("read_irredundant_clauses");
+  const char* err = read_dimacs(path, vars);
+  STATE (CONFIGURING); // Transition back to CONFIGURING state.
+  LOG_API_CALL_RETURNS("read_irredundant_clauses");
+  return err;
+}
+
+const char * Solver::read_learned_clauses(const char *path, int& vars) {
+  LOG_API_CALL_BEGIN ("read_learned_clauses");
+  REQUIRE_VALID_STATE ();
+  File * file = File::read (internal, path);
+  if (!file) {
+    return internal->error_message.init(
+      "failed to read file '%s'", path);
+  }
+  vector<int> empty_vector;
+  bool incremental = false;
+  Parser parser(this, file, &incremental, &empty_vector);
+  const char * err = parser.parse_redundant_clauses(vars);
+  delete file;
+  LOG_API_CALL_RETURNS("read_learned_clauses");
+  return err;
+}
+
+const char * Solver::read_reconstruction_stack(const char *path, int& vars,
+                                               bool is_binary) {
+  LOG_API_CALL_BEGIN ("read_reconstruction_stack");
+  REQUIRE_VALID_STATE ();
+  File * file = File::read (internal, path);
+  if (!file) {
+    return internal->error_message.init(
+      "failed to read file '%s'", path);
+  }
+  vector<int> empty_vector;
+  bool incremental = false;
+  Parser parser(this, file, &incremental, &empty_vector);
+  const char * err;
+  if(is_binary) { err = parser.parse_binary_reconstruction_stack(vars); }
+  else { err = parser.parse_plain_reconstruction_stack(vars); }
+  delete file;
+  LOG_API_CALL_RETURNS("read_reconstruction_stack");
+  return err;
+}
+
+const char * Solver::read_phases (const char * path) {
+  File * file = File::read (internal, path);
+  // Read saved phases
+  int current_char = file->get();
+  int evar = 1;
+  char phase = 0;
+  while(current_char != EOF && current_char != '\n'
+          && evar <= external->max_var) {
+    phase = current_char == 2 ? -1 : current_char;
+    int ivar = external->e2i[evar];
+    internal->phases.saved[ivar] = phase;
+    current_char = file->get();
+    evar++;
+  }
+
+  // Skip rest of line
+  while(current_char != EOF && current_char != '\n') current_char = file->get();
+
+  // Read target phases
+  current_char = file->get();
+  evar = 1;
+  while(current_char != EOF && current_char != '\n'
+          && evar <= external->max_var) {
+    phase = current_char == 2 ? -1 : current_char;
+    int ivar = external->e2i[evar];
+    internal->phases.target[ivar] = phase;
+    current_char = file->get();
+    evar++;
+  }
+  delete file;
+  return 0;
+}
+
+const char * Solver::write_phases (const char * path) {
+  File * file = File::write (internal, path);
+  // Write saved phases
+  for(int evar=1;evar<=external->max_var;evar++){
+    int ivar = abs(external->e2i[evar]);
+    char phase = internal->phases.saved[ivar] < 0 ?
+      2 : internal->phases.saved[ivar];
+    file->put(phase);
+  }
+  file->put('\n');
+
+  // Write target phases
+  for(int evar=1;evar<=external->max_var;evar++){
+    int ivar = abs(external->e2i[evar]);
+    char phase = internal->phases.target[ivar] < 0 ?
+                 2 : internal->phases.target[ivar];
+    file->put(phase);
+  }
+  file->put('\n');
+  delete file;
+  return 0;
 }
 
 /*------------------------------------------------------------------------*/
@@ -1170,6 +1443,7 @@ struct WitnessWriter : public WitnessIterator {
   File * file;
   int64_t witnesses;
   WitnessWriter (File * f) : file (f), witnesses (0) { }
+
   bool write (const vector<int> & a) {
     for (const auto & lit : a) {
       if (!file->put (lit)) return false;
@@ -1177,7 +1451,8 @@ struct WitnessWriter : public WitnessIterator {
     }
     return file->put ('0');
   }
-  bool witness (const vector<int> & c, const vector<int> & w) {
+
+  virtual bool witness (const vector<int> & c, const vector<int> & w) {
     if (!write (c)) return false;
     if (!file->put (' ')) return false;
     if (!write (w)) return false;
@@ -1187,7 +1462,27 @@ struct WitnessWriter : public WitnessIterator {
   }
 };
 
-const char * Solver::write_extension (const char * path) {
+struct BinaryWitnessWriter : public WitnessWriter {
+  BinaryWitnessWriter (File * f) : WitnessWriter (f) { }
+
+  virtual bool witness (const vector<int> & c, const vector<int> & w) {
+    for(auto lit : c) {
+      if(!put_binary_lit(file, lit)) return false;
+    }
+    if(!file->put(static_cast<char>(0))) return false;
+    for(auto lit : w) {
+      if(!put_binary_lit(file, lit)) return false;
+    }
+    if(!file->put(static_cast<char>(0))) return false;
+    witnesses++;
+    return true;
+  }
+};
+
+const char * Solver::write_extension (const char * path,
+                                      bool include_unfrozen_units,
+                                      bool reverse_order,
+                                      bool is_binary) {
   LOG_API_CALL_BEGIN ("write_extension", path);
   REQUIRE_VALID_STATE ();
   const char * res = 0;
@@ -1195,19 +1490,38 @@ const char * Solver::write_extension (const char * path) {
   const double start = internal->time ();
 #endif
   File * file = File::write (internal, path);
-  WitnessWriter writer (file);
+
+  long long number_of_witnesses = 0;
   if (file) {
-    if (!traverse_witnesses_backward (writer))
-      res = internal->error_message.init (
-              "writing to DIMACS file '%s' failed", path);
+    // no smart pointer to stay consistent with the rest of the code base
+    WitnessWriter* writer;
+    if(is_binary) {
+      writer = new BinaryWitnessWriter(file);
+    } else {
+      writer = new WitnessWriter(file);
+    }
+    bool success = false;
+    if(reverse_order) {
+      success = traverse_witnesses_backward(*writer, include_unfrozen_units);
+    } else {
+      success = traverse_witnesses_forward(*writer, include_unfrozen_units);
+    }
+    number_of_witnesses = writer->witnesses;
+    if (!success) {
+      res = internal->error_message.init(
+        "writing to DIMACS file '%s' failed", path);
+    }
+    delete writer;
     delete file;
   } else res = internal->error_message.init (
                  "failed to open extension file '%s' for writing", path);
 #ifndef QUIET
   if (!res) {
     const double end = internal->time ();
-    MSG ("wrote %" PRId64 " witnesses in %.2f seconds %s time",
-      writer.witnesses, end - start,
+    MSG ("wrote %" PRId64 " %s clause-witness pairs in %.2f seconds %s time",
+      number_of_witnesses,
+      is_binary ? "binary-format" : "plain-text",
+      end - start,
       internal->opts.realtime ? "real" : "process");
   }
 #endif
@@ -1217,11 +1531,11 @@ const char * Solver::write_extension (const char * path) {
 
 /*------------------------------------------------------------------------*/
 
-struct ClauseCopier : public ClauseIterator {
+struct ClauseCopier : public ClauseGlueIterator {
   Solver & dst;
 public:
   ClauseCopier (Solver & d) : dst (d) { }
-  bool clause (const vector<int> & c) {
+  bool clause (const vector<int> & c, int) {
     for (const auto & lit : c)
       dst.add (lit);
     dst.add (0);
@@ -1245,7 +1559,7 @@ void Solver::copy (Solver & other) const {
     "target solver already modified");
   internal->opts.copy (other.internal->opts);
   ClauseCopier clause_copier (other);
-  traverse_clauses (clause_copier);
+  traverse_irredundant_clauses (clause_copier);
   WitnessCopier witness_copier (other.external);
   traverse_witnesses_forward (witness_copier);
   external->copy_flags (*other.external);

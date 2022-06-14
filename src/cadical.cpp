@@ -156,6 +156,19 @@ void App::print_usage (bool all) {
 "                 to check consistency of learned clauses\n"
 "                 during testing and debugging\n"
 "\n"
+"  --ic-in <in>   read irredundant clauses from file <in>\n"
+"  --ic-out <out> write irredundant clauses to file <out>\n"
+"                 (unlike '-o', this includes non-frozen unit clauses)\n"
+"  --lc-in <in>   read learned clauses from file <in>\n"
+"  --lc-out <out> write learned clauses to file <out>\n"
+"  --rs-in <in>   read reconstruction stack from file <in>\n"
+"  --rs-out <out> write reconstruction stack to file <out>\n"
+"                 (unlike '-e', the stack is written from bottom to top)\n"
+"  --state-binary if set, irredundant clauses, learned clauses, and the\n"
+"                 reconstruction stack are written in binary format,\n"
+"                 and the reconstruction stack is read in binary\n"
+"                 format, otherwise plain-text format is used.\n"
+"\n"
 "  -w <sol>       write result including a potential witness\n"
 "                 solution in competition format to the given file\n"
 "\n"
@@ -339,8 +352,18 @@ int App::main (int argc, char ** argv) {
   const char * read_solution_path = 0, * write_result_path = 0;
   const char * dimacs_path = 0, * proof_path = 0;
   bool proof_specified = false, dimacs_specified = false;
+  bool is_state_binary = false;
   int optimize = 0, preprocessing = 0, localsearch = 0;
-  const char * output_path = 0, * extension_path = 0;
+  const char * output_path = 0;
+  const char * extension_path = 0;
+  const char * reconstruction_stack_in = 0;
+  const char * reconstruction_stack_out = 0;
+  const char * irredundant_clauses_in = 0;
+  const char * irredundant_clauses_out = 0;
+  const char * learned_clauses_in = 0;
+  const char * learned_clauses_out = 0;
+  const char * phases_in = 0;
+  const char * phases_out = 0;
   int conflict_limit = -1, decision_limit = -1;
   const char * conflict_limit_specified = 0;
   const char * decision_limit_specified = 0;
@@ -398,6 +421,52 @@ int App::main (int argc, char ** argv) {
       else if (!File::writable (argv[i]))
         APPERR ("extension file '%s' not writable", argv[i]);
       else extension_path = argv[i];
+    } else if (!strcmp (argv[i], "--state-binary")) {
+      is_state_binary = true;
+    } else if (!strcmp (argv[i], "--rs-in")) {
+      if (++i == argc) APPERR ("argument to '--rs-in' missing");
+      reconstruction_stack_in = argv[i];
+    } else if (!strcmp (argv[i], "--rs-out")) {
+      if (++i == argc) APPERR ("argument to '--rs-out' missing");
+      else if (reconstruction_stack_out)
+        APPERR ("multiple rs-out file options '--rs-out %s' and '--rs-out %s'",
+          reconstruction_stack_out, argv[i]);
+      else if (!File::writable (argv[i]))
+        APPERR ("reconstruction-stack file '%s' not writable", argv[i]);
+      else reconstruction_stack_out = argv[i];
+    } else if (!strcmp (argv[i], "--ic-in")) {
+      if (++i == argc) APPERR ("argument to '--ic-in' missing");
+      irredundant_clauses_in = argv[i];
+    } else if (!strcmp (argv[i], "--ic-out")) {
+      if (++i == argc) APPERR ("argument to '--ic-out' missing");
+      else if (irredundant_clauses_out)
+        APPERR ("multiple ic-out file options '--ic-out %s' and '--ic-out %s'",
+                irredundant_clauses_out, argv[i]);
+      else if (!File::writable (argv[i]))
+        APPERR ("irredundant-clause file '%s' not writable", argv[i]);
+      irredundant_clauses_out = argv[i];
+    } else if (!strcmp (argv[i], "--lc-in")) {
+      if (++i == argc) APPERR ("argument to '--lc-in' missing");
+      learned_clauses_in = argv[i];
+    } else if (!strcmp (argv[i], "--lc-out")) {
+      if (++i == argc) APPERR ("argument to '--lc-out' missing");
+      else if (learned_clauses_out)
+        APPERR ("multiple lc-out file options '--lc-out %s' and '--lc-out %s'",
+                learned_clauses_out, argv[i]);
+      else if (!File::writable (argv[i]))
+        APPERR ("learned-clause file '%s' not writable", argv[i]);
+      learned_clauses_out = argv[i];
+    } else if (!strcmp (argv[i], "--phases-in")) {
+      if (++i == argc) APPERR ("argument to '--phases-in' missing");
+      phases_in = argv[i];
+    } else if (!strcmp (argv[i], "--phases-out")) {
+      if (++i == argc) APPERR ("argument to '--phases-out' missing");
+      else if (phases_out)
+        APPERR ("multiple options '--phases-out %s' and '--phases-out %s'",
+                phases_out, argv[i]);
+      else if (!File::writable (argv[i]))
+        APPERR ("phases file '%s' not writable", argv[i]);
+      phases_out = argv[i];
     } else if (is_color_option (argv[i])) {
       tout.force_colors ();
       terr.force_colors ();
@@ -625,6 +694,38 @@ int App::main (int argc, char ** argv) {
         tout.green_code (), proof_path, tout.normal_code ());
   } else solver->verbose (1, "will not generate nor write DRAT proof");
   solver->section ("parsing input");
+
+  max_var = 0;
+  int irredundant_max_var = 0;
+  int redundant_max_var = 0;
+  int reconstruction_stack_max_var = 0;
+  int dimacs_max_var = 0;
+
+  if (irredundant_clauses_in) {
+    solver->message ("reading irredundant clauses from %s'%s'%s",
+                     tout.green_code (), irredundant_clauses_in,
+                     tout.normal_code ());
+    err = solver->read_irredundant_clauses(irredundant_clauses_in,
+                                           irredundant_max_var);
+  }
+
+  if (learned_clauses_in) {
+    solver->message ("reading learned clauses from %s'%s'%s",
+                     tout.green_code (), learned_clauses_in,
+                     tout.normal_code ());
+    solver->read_learned_clauses(learned_clauses_in, redundant_max_var);
+  }
+
+  if (reconstruction_stack_in) {
+    solver->message ("reading %s reconstruction stack from %s'%s'%s",
+                     is_state_binary ? "binary" : "plain-text",
+                     tout.green_code (), reconstruction_stack_in,
+                     tout.normal_code ());
+    solver->read_reconstruction_stack(reconstruction_stack_in,
+                                      reconstruction_stack_max_var,
+                                      is_state_binary);
+  }
+
   dimacs_name = dimacs_path ? dimacs_path : "<stdin>";
   string help;
   if (!dimacs_path) {
@@ -634,15 +735,29 @@ int App::main (int argc, char ** argv) {
     help += tout.normal_code ();
   }
   solver->message ("reading DIMACS file from %s'%s'%s%s",
-    tout.green_code (), dimacs_name, tout.normal_code (), help.c_str ());
+                   tout.green_code (), dimacs_name, tout.normal_code (), help.c_str ());
+
   bool incremental;
   vector<int> cube_literals;
+
   if (dimacs_path)
-    err = solver->read_dimacs(dimacs_path, max_var, force_strict_parsing,
+    err = solver->read_dimacs(dimacs_path, dimacs_max_var, force_strict_parsing,
                             incremental, cube_literals);
   else
-    err = solver->read_dimacs(stdin, dimacs_name, max_var, force_strict_parsing,
+    err = solver->read_dimacs(stdin, dimacs_name, dimacs_max_var, force_strict_parsing,
                             incremental, cube_literals);
+
+  max_var = max(
+    max(dimacs_max_var, reconstruction_stack_max_var),
+    max(redundant_max_var, irredundant_max_var));
+
+  if(phases_in) {
+    solver->message ("reading phases from %s'%s'%s",
+                     tout.green_code (), phases_in,
+                     tout.normal_code ());
+    solver->read_phases(phases_in);
+  }
+
   if (err) APPERR ("%s", err);
   if (read_solution_path) {
     solver->section ("parsing solution");
@@ -657,6 +772,7 @@ int App::main (int argc, char ** argv) {
     solver->message ();
   }
   solver->options ();
+
 
   int res = 0;
 
@@ -782,38 +898,81 @@ int App::main (int argc, char ** argv) {
     res = solver->solve ();
   }
 
-  if (proof_specified) {
-    solver->section ("closing proof");
-    solver->flush_proof_trace ();
-    solver->close_proof_trace ();
-  }
-
-  if (output_path) {
-    solver->section ("writing output");
-    solver->message ("writing simplified CNF to DIMACS file %s'%s'%s",
-      tout.green_code (), output_path, tout.normal_code ());
-    err = solver->write_dimacs (output_path, max_var);
+  if (phases_out) {
+    solver->section ("writing phases");
+    solver->message ("writing phases to %s'%s'%s",
+                     tout.green_code (), phases_out, tout.normal_code ());
+    err = solver->write_phases(phases_out);
     if (err) APPERR ("%s", err);
   }
 
   if (extension_path) {
     solver->section ("writing extension");
     solver->message ("writing extension stack to %s'%s'%s",
-      tout.green_code (), extension_path, tout.normal_code ());
+                     tout.green_code (), extension_path, tout.normal_code ());
     err = solver->write_extension (extension_path);
     if (err) APPERR ("%s", err);
+  }
+
+  if (reconstruction_stack_out) {
+    solver->section ("writing reconstruction stack without units");
+    solver->message ("writing reconstruction stack without units to %s'%s'%s",
+                     tout.green_code (), reconstruction_stack_out,
+                     tout.normal_code ());
+    err = solver->write_extension (reconstruction_stack_out,
+                                   false,
+                                   false, is_state_binary);
+    if (err) APPERR ("%s", err);
+  }
+
+  if (output_path) {
+    solver->section ("writing output");
+    solver->message ("writing simplified CNF to DIMACS file %s'%s'%s",
+      tout.green_code (), output_path, tout.normal_code ());
+    err = solver->write_dimacs (output_path,
+                                max_var,
+                                true,
+                                false);
+    if (err) APPERR ("%s", err);
+  }
+
+  if (irredundant_clauses_out) {
+    solver->section ("writing irredundant clauses");
+    solver->message ("writing irredundant clauses to DIMACS file %s'%s'%s",
+                     tout.green_code (), irredundant_clauses_out,
+                     tout.normal_code ());
+    err = solver->write_dimacs (
+      irredundant_clauses_out, max_var,
+      false, true,
+      is_state_binary);
+    if (err) APPERR ("%s", err);
+  }
+
+  if (learned_clauses_out) {
+    solver->section("writing learned clauses");
+    solver->message ("writing learned clauses to file %s'%s'%s",
+                     tout.green_code (), learned_clauses_out,
+                     tout.normal_code ());
+    solver->write_learned_clauses (learned_clauses_out,
+                                   true,
+                                   is_state_binary);
+  }
+
+  if (proof_specified) {
+    solver->section ("closing proof");
+    solver->flush_proof_trace ();
+    solver->close_proof_trace ();
   }
 
   solver->section ("result");
 
   FILE * write_result_file = stdout;
-  if (write_result_path)
-    {
-      write_result_file = fopen (write_result_path, "w");
-      if (!write_result_file)
-        APPERR ("could not write solution to '%s'", write_result_path);
-      solver->message ("writing result to '%s'", write_result_path);
-    }
+  if (write_result_path) {
+    write_result_file = fopen (write_result_path, "w");
+    if (!write_result_file)
+      APPERR ("could not write solution to '%s'", write_result_path);
+    solver->message ("writing result to '%s'", write_result_path);
+  }
 
   if (res == 10) {
     fputs ("s SATISFIABLE\n", write_result_file);
@@ -824,6 +983,7 @@ int App::main (int argc, char ** argv) {
   fflush (write_result_file);
   if (write_result_path)
     fclose (write_result_file);
+
   solver->statistics ();
   solver->resources ();
   solver->section ("shutting down");

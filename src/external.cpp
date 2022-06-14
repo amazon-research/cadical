@@ -273,6 +273,16 @@ int External::solve (bool preprocess_only) {
 
 void External::terminate () { internal->terminate (); }
 
+void External::add_original_redundant_clause(
+  const vector<int> &clause, int glue) {
+  internal->original.clear();
+  for(auto& elit : clause) {
+    internal->original.push_back(internalize(elit));
+  }
+  internal->add_new_original_clause(true, max(1, glue));
+  internal->original.clear();
+}
+
 int External::lookahead () {
   reset_extended ();
   update_molten_literals ();
@@ -479,7 +489,7 @@ void External::check_failing () {
 // as unit witness.
 
 bool
-External::traverse_all_frozen_units_as_clauses (ClauseIterator & it)
+External::traverse_all_frozen_units_as_clauses (ClauseGlueIterator & it)
 {
   if (internal->unsat) return true;
 
@@ -515,6 +525,26 @@ External::traverse_all_non_frozen_units_as_witnesses (WitnessIterator & it)
     if (!it.witness (clause_and_witness, clause_and_witness))
       return false;
     clause_and_witness.clear ();
+  }
+
+  return true;
+}
+
+bool
+External::traverse_all_units_as_clauses (ClauseGlueIterator & it)
+{
+  if (internal->unsat) return true;
+
+  vector<int> clause;
+
+  for (auto idx : vars) {
+    const int tmp = fixed (idx);
+    if (!tmp) continue;
+    int unit = tmp < 0 ? -idx : idx;
+    clause.push_back (unit);
+    if (!it.clause (clause))
+      return false;
+    clause.clear ();
   }
 
   return true;

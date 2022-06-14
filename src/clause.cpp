@@ -313,7 +313,7 @@ void Internal::assign_original_unit (int lit) {
 
 // New clause added through the API, e.g., while parsing a DIMACS file.
 //
-void Internal::add_new_original_clause () {
+void Internal::add_new_original_clause (bool redundant, int glue) {
   if (level) backtrack ();
   LOG (original, "original clause");
   bool skip = false;
@@ -359,7 +359,7 @@ void Internal::add_new_original_clause () {
     } else if (size == 1) {
       assign_original_unit (clause[0]);
     } else {
-      Clause * c = new_clause (false);
+      Clause * c = new_clause (redundant, glue);
       watch_clause (c);
     }
     if (original.size () > size) {

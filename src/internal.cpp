@@ -717,22 +717,38 @@ void Internal::dump () {
 
 /*------------------------------------------------------------------------*/
 
-bool Internal::traverse_clauses (ClauseIterator & it) {
-  vector<int> eclause;
+bool Internal::traverse_clauses (ClauseGlueIterator & it,
+                                 bool include_irredundants,
+                                 bool include_redundants,
+                                 bool log_simplifications_in_proof) {
+
+  vector<int> eclause, iclause;
   if (unsat) return it.clause (eclause);
   for (const auto & c : clauses) {
-    if (c->garbage) continue;
-    if (c->redundant) continue;
-    bool satisfied = false;
+    if (c->garbage) continue; // Ignore hyper resolvents on purpose.
+    if (!include_redundants && c->redundant) continue;
+    if (!include_irredundants && !c->redundant) continue;
+    bool delete_clause = false;
     for (const auto & ilit : *c) {
       const int tmp = fixed (ilit);
-      if (tmp > 0) { satisfied = true; break; }
+      if (tmp > 0 || (c->redundant && c->hyper)) { // delete satisfied clauses and hyper resolvents.
+        delete_clause = true;
+        if(proof && log_simplifications_in_proof) proof->delete_clause(c);
+        break;
+      }
       if (tmp < 0) continue;
-      const int elit = externalize (ilit);
-      eclause.push_back (elit);
+      iclause.push_back (ilit);
+      eclause.push_back (externalize (ilit));
     }
-    if (!satisfied && !it.clause (eclause))
-      return false;
+    if(proof && log_simplifications_in_proof && !delete_clause &&
+       static_cast<int>(iclause.size()) < c->size){
+      proof->add_derived_clause(iclause);
+      proof->delete_clause(c);
+    }
+    int glue = c->redundant ? std::min(
+      c->glue, static_cast<int>(iclause.size())) : 0;
+    if (!delete_clause && !it.clause (eclause, glue)) return false;
+    iclause.clear ();
     eclause.clear ();
   }
   return true;

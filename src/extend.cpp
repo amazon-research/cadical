@@ -133,14 +133,14 @@ void External::extend () {
         assert (i != begin);
     else {
       while ((lit = *--i)) {
-        const int tmp = ival (lit);             // not 'signed char'!!!
+        const int tmp = ival(lit);             // not 'signed char'!!!
         if (tmp < 0) {
           LOG ("flipping blocking literal %d", lit);
           assert (lit);
           assert (lit != INT_MIN);
-          size_t idx = abs (lit);
-	  if (idx >= vals.size ())
-	    vals.resize (idx + 1, false);
+          size_t idx = abs(lit);
+          if (idx >= vals.size())
+            vals.resize(idx + 1, false);
           vals[idx] = !vals[idx];
           internal->stats.extended++;
           flipped++;

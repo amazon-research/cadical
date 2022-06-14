@@ -195,6 +195,7 @@ struct External;
 class Learner;
 class Terminator;
 class ClauseIterator;
+class ClauseGlueIterator;
 class WitnessIterator;
 
 /*------------------------------------------------------------------------*/
@@ -634,7 +635,8 @@ public:
   void options ();      // print current option and value list
 
   //------------------------------------------------------------------------
-  // Traverse irredundant clauses or the extension stack in reverse order.
+  // Traverse irredundant/redundant clauses, or the extension stack in reverse
+  // order.
   //
   // The return value is false if traversal is aborted early due to one of
   // the visitor functions returning false.  See description of the
@@ -644,8 +646,16 @@ public:
   //   ensure (VALID)
   //
   bool traverse_clauses (ClauseIterator &) const;
-  bool traverse_witnesses_backward (WitnessIterator &) const;
-  bool traverse_witnesses_forward (WitnessIterator &) const;
+  bool traverse_irredundant_clauses (ClauseGlueIterator &,
+                                     bool exclude_non_frozen_units=true,
+                                     bool log_simplifications_in_proof=false) const;
+  bool traverse_redundant_clauses (ClauseGlueIterator &,
+                                   bool log_simplifications_in_proof=false) const;
+
+  bool traverse_witnesses_backward (WitnessIterator &,
+                                    bool include_unfrozen_units=true) const;
+  bool traverse_witnesses_forward (WitnessIterator &,
+                                   bool include_unfrozen_units=true) const;
 
   //------------------------------------------------------------------------
   // Files with explicit path argument support compressed input and output
@@ -657,6 +667,15 @@ public:
   // 'p cnf 0 0' is always legal.  If the 'strict' argument is larger '1'
   // strict formatting of the header is required, i.e., single spaces
   // everywhere and no trailing white space.
+  //
+  // This function can also read files in binary DIMACS format as described in
+  // the paper "Migrating Solver State" (Armin Biere, Md Solimul Chowdhury,
+  // Marijn J.H. Heule, Benjamin Kiesl, and Mike Whalen; SAT 2022). The binary
+  // format is similar to the plain-text format. Literals are not encoded in
+  // ASCII but in the variable-byte-length big-endian format also used by
+  // DRAT-trim. A binary DIMACS file starts with a 0-byte 0x00 to indicate that
+  // it's in binary, and clauses are separated by the 0-byte instead of ASCII
+  // '0'. For details see the above-mentioned paper.
   //
   // Returns zero if successful and otherwise an error message.
   //
@@ -673,7 +692,6 @@ public:
   // parser finds and 'p inccnf' header or cubes then '*incremental' is set
   // to true and the cubes are stored in the given vector (each cube
   // terminated by a zero).
-
   const char * read_dimacs (FILE * file,
                             const char * name, int & vars, int strict,
                             bool & incremental, std::vector<int> & cubes);
@@ -681,10 +699,61 @@ public:
   const char * read_dimacs (const char * path, int & vars, int strict,
                             bool & incremental, std::vector<int> & cubes);
 
+  const char * read_irredundant_clauses (const char * path, int & vars);
+
+  // Read learned clauses from the file at the given path. The function can
+  // parse learned clauses both in plain-text format and binary format as
+  // explained in the paper "Migrating Solver State" (Armin Biere, Md Solimul
+  // Chowdhury, Marijn J.H. Heule, Benjamin Kiesl, and Mike Whalen; SAT 2022).
+  //
+  // In plain-text format, each line of the file corresponds to a clause
+  // and its glue value:
+  //
+  // <line> = <clause> "0" <glue> "0\n"
+  // <clause> = <literal>*
+  // <literal> = <number>
+  // <glue> = <number>
+  // <number> = [1-9][0-9]*
+  //
+  // In the binary format, files start with the 0-byte 0x00. Literals are
+  // serialized in the variable-byte-length big-endian format also used by
+  // DRAT-trim. The 0-byte is used instead of ASCII '0', and line breaks are
+  // omitted. Otherwise, the binary format is the same as the plain-text format.
+  // For details see the above-mentioned paper.
+  const char * read_learned_clauses(const char * path, int& vars);
+
+  // Read the reconstruction stack from the file at the given path. The function
+  // can parse the stack both in plain-text format and binary format as
+  // explained in the paper "Migrating Solver State" (Armin Biere, Md Solimul
+  // Chowdhury, Marijn J.H. Heule, Benjamin Kiesl, and Mike Whalen; SAT 2022).
+  //
+  // In the plain-text format, each line of the file corresponds to a
+  // clause-witness pair as defined
+  // in the following:
+  //
+  // <line> = <clause> "0" <witness> "0\n"
+  // <witness> = <clause>
+  // <clause> = <literal>*
+  // <literal> = <number>
+  // <number> = [1-9][0-9]*
+  //
+  // In the binary format, literals are serialized in the variable-byte-length
+  // big-endian format also used by DRAT-trim. The 0-byte is used instead of
+  // ASCII '0', and line breaks are omitted. In contrast to binary DIMACS and
+  // binary learned clauses, reconstruction-stack files do NOT use an initial
+  // 0-byte at the start of a file to indicate that it's in binary. For details
+  // see the above-mentioned paper.
+  const char * read_reconstruction_stack(const char * path, int& vars,
+                                         bool is_binary);
+
+  const char * read_phases (const char * path);
+
   //------------------------------------------------------------------------
-  // Write current irredundant clauses and all derived unit clauses
-  // to a file in DIMACS format.  Clauses on the extension stack are
-  // not included, nor any redundant clauses.
+  // Write current irredundant clauses to a file in DIMACS format.
+  // Clauses on the extension stack are not included, nor any
+  // redundant clauses. Non-frozen units can be included by setting the
+  // flag 'include_all_units' to true. Binary DIMACS can be used if the flag
+  // is_binary is true (see read_dimacs for details on binary DIMACS).
   //
   // The 'min_max_var' parameter gives a lower bound on the number '<vars>'
   // of variables used in the DIMACS 'p cnf <vars> ...' header.
@@ -694,11 +763,28 @@ public:
   //   require (VALID)
   //   ensure (VALID)
   //
-  const char * write_dimacs (const char * path, int min_max_var = 0);
+  const char * write_dimacs (const char * path, int min_max_var = 0,
+                             bool exclude_unfrozen_units=true,
+                             bool log_simplifications_in_proof=false,
+                             bool is_binary=false);
 
-  // The extension stack for reconstruction a solution can be written too.
+  // Write learned clauses to the file at the given path. If is_binary is true
+  // learned clauses are written in binary format, otherwise plain-text format
+  // is used. See read_learned_clauses for details on the file formats.
+  const char * write_learned_clauses (const char * path,
+                                      bool log_simplifications_in_proof=false,
+                                      bool is_binary=false);
+
+  // Write the extension stack for reconstructing a solution. If the flag
+  // is_binary is true, the stack is written in binary format, otherwise it
+  // is written in plain-text format.
   //
-  const char * write_extension (const char * path);
+  const char * write_extension (const char * path,
+                                bool include_unfrozen_units=true,
+                                bool reverse_order=true,
+                                bool is_binary=false);
+
+  const char * write_phases (const char * path);
 
   // Print build configuration to a file with prefix 'c '.  If the file
   // is '<stdout>' or '<stderr>' then terminal color codes might be used.
@@ -903,6 +989,12 @@ class ClauseIterator {
 public:
   virtual ~ClauseIterator () { }
   virtual bool clause (const std::vector<int> &) = 0;
+};
+
+class ClauseGlueIterator {
+public:
+  virtual ~ClauseGlueIterator () { }
+  virtual bool clause (const std::vector<int>& clause, int glue=0) = 0;
 };
 
 /*------------------------------------------------------------------------*/

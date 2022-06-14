@@ -516,7 +516,7 @@ struct Internal {
   void delete_clause (Clause *);
   void mark_garbage (Clause *);
   void assign_original_unit (int);
-  void add_new_original_clause ();
+  void add_new_original_clause (bool redundant=false, int glue=0);
   Clause * new_learned_redundant_clause (int glue);
   Clause * new_hyper_binary_resolved_clause (bool red, int glue);
   Clause * new_clause_as (const Clause * orig);
@@ -1133,9 +1133,12 @@ struct Internal {
   void dump (Clause *);
   void dump ();
 
-  // Export and traverse all irredundant (non-unit) clauses.
+  // Export and traverse all (non-unit) clauses.
   //
-  bool traverse_clauses (ClauseIterator &);
+  bool traverse_clauses (ClauseGlueIterator & it,
+                         bool include_irredundants=true,
+                         bool include_redundants=false,
+                         bool log_simplifications_in_proof=false);
 
   /*----------------------------------------------------------------------*/
 

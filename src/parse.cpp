@@ -21,7 +21,7 @@ do { \
 
 inline int Parser::parse_char () { return file->get (); }
 
-// Return an non zero error string if a parse error occurred.
+// Return a non-zero error string if a parse error occurred.
 
 inline const char *
 Parser::parse_string (const char * str, char prev) {
@@ -42,6 +42,39 @@ Parser::parse_positive_int (int & ch, int & res, const char * name) {
       PER ("too large '%s' in header", name);
     res = 10*res + digit;
   }
+  return 0;
+}
+
+inline const char* Parser::parse_binary_int (int &ch, int& res) {
+  res = ch & 0b01111111;
+  int shift = 7;
+  while (ch & 0b10000000) {
+    ch = parse_char();
+    res |= (ch & 0b01111111) << shift;
+    shift += 7;
+  }
+  bool negate = res & 1;
+  res >>= 1;
+  if (negate) res = -res;
+  ch = parse_char();
+  return 0;
+}
+
+inline const char* Parser::parse_binary_lit (int &ch, int& lit, int& vars) {
+  parse_binary_int(ch, lit);
+  vars = max(vars, abs(lit));
+  return 0;
+}
+
+inline const char* Parser::parse_binary_clause (int &ch, vector<int>& clause,
+                                                int& vars) {
+  clause.clear();
+  int lit = 0;
+  do {
+    parse_binary_lit(ch, lit, vars);
+    clause.emplace_back(lit);
+  } while (lit != 0);
+  clause.pop_back();
   return 0;
 }
 
@@ -94,6 +127,9 @@ const char * Parser::parse_dimacs_non_profiled (int & vars, int strict) {
   //
   for (;;) {
     ch = parse_char ();
+    if(ch == 0) {
+      return parse_binary_dimacs(ch, vars);
+    }
     if (strict != STRICT)
       if (ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r') continue;
     if (ch != 'c') break;
@@ -219,8 +255,7 @@ const char * Parser::parse_dimacs_non_profiled (int & vars, int strict) {
           PER ("unexpected end-of-file in comment");
     }
     solver->add (lit);
-    if (!found_inccnf_header &&
-        !lit && parsed++ >= clauses && strict != FORCED)
+    if (!lit && parsed++ >= clauses && !found_inccnf_header && strict != FORCED)
       PER ("too many clauses");
   }
 
@@ -231,7 +266,7 @@ const char * Parser::parse_dimacs_non_profiled (int & vars, int strict) {
 
 #ifndef QUIET
   double end = internal->time ();
-  MSG ("parsed %d clauses in %.2f seconds %s time",
+  MSG ("parsed %d plain-text clauses in %.2f seconds %s time",
     parsed, end - start, internal->opts.realtime ? "real" : "process");
 #endif
 
@@ -295,6 +330,165 @@ const char * Parser::parse_dimacs_non_profiled (int & vars, int strict) {
     }
 #endif
 
+  return 0;
+}
+
+const char * Parser::parse_binary_dimacs (int& ch, int& vars) {
+#ifndef QUIET
+  double start = internal->time ();
+#endif
+  int parsed = 0;
+  int lit = 0;
+  ch = parse_char(); // skip initial 0
+  while(ch != EOF) {
+    parse_binary_lit(ch, lit, vars);
+    solver->add(lit);
+    if(lit == 0) parsed++;
+  }
+  // binary DIMACS does not support incremental (yet)
+  if(parse_inccnf_too) *parse_inccnf_too = false;
+#ifndef QUIET
+  double end = internal->time ();
+  MSG ("parsed %d binary-format clauses in %.2f seconds %s time",
+       parsed, end - start, internal->opts.realtime ? "real" : "process");
+#endif
+  return 0;
+}
+
+/*------------------------------------------------------------------------*/
+
+// Parsing redundant clauses (see header file for details on the format).
+
+
+const char * Parser::parse_clause (int& ch, vector<int>& clause, int& vars) {
+  int lit;
+  clause.clear();
+  do {
+    parse_lit(ch, lit, vars, FORCED);
+    clause.push_back(lit);
+    while(isspace(ch) && ch != '\n') ch = parse_char(); // skip blanks
+  } while(lit != 0);
+  clause.pop_back();
+  return 0;
+}
+
+const char * Parser::parse_glue (int& ch, int& glue) {
+  while(!isdigit(ch)) ch = parse_char();
+  glue = ch - '0';
+  while(isdigit(ch = parse_char())) glue = glue * 10 + ch - '0';
+  while(ch != '0') ch = parse_char();
+  ch = parse_char(); // eat '0'
+  while(isspace(ch) && ch != '\n') ch = parse_char(); // skip blanks
+  return 0;
+}
+
+const char * Parser::parse_redundant_clauses (int& vars) {
+#ifndef QUIET
+  double start = internal->time ();
+#endif
+  int ch = 0;
+  int glue = 0;
+  int parsed = 0;
+  vector<int> clause;
+  for(;;) {
+    ch = parse_char();
+    if(ch == 0) return parse_binary_redundant_clauses(ch, vars);
+    while(isspace(ch)) { ch = parse_char(); }
+    if(ch == EOF) break;
+    parse_clause(ch, clause, vars);
+    parse_glue(ch, glue);
+    external->add_original_redundant_clause(clause, glue);
+    parsed++;
+  }
+  internal->original.clear();
+#ifndef QUIET
+  double end = internal->time ();
+  MSG ("parsed %d plain-text clauses in %.2f seconds %s time",
+       parsed, end - start, internal->opts.realtime ? "real" : "process");
+#endif
+  return 0;
+}
+
+const char * Parser::parse_binary_redundant_clauses (int& ch, int& vars) {
+#ifndef QUIET
+  double start = internal->time ();
+#endif
+  int parsed = 0;
+  vector<int> clause;
+  int glue;
+  ch = parse_char(); // skip initial 0
+  while(ch != EOF) {
+    parse_binary_clause(ch, clause, vars);
+    parse_binary_int(ch, glue);
+    external->add_original_redundant_clause(clause, glue);
+    parsed++;
+  }
+  internal->original.clear();
+#ifndef QUIET
+  double end = internal->time ();
+  MSG ("parsed %d binary-format clauses in %.2f seconds %s time",
+       parsed, end - start, internal->opts.realtime ? "real" : "process");
+#endif
+  return 0;
+}
+
+/*------------------------------------------------------------------------*/
+
+// Parsing reconstruction stack (see header for format).
+
+const char * Parser::parse_reconstruction_stack(int& vars, bool is_binary) {
+  if(is_binary) return parse_binary_reconstruction_stack(vars);
+  else return parse_plain_reconstruction_stack(vars);
+}
+
+const char * Parser::parse_plain_reconstruction_stack (int& vars) {
+#ifndef QUIET
+  double start = internal->time ();
+#endif
+  int ch = 0;
+  int parsed = 0;
+  vector<int> clause;
+  vector<int> witness;
+  for(;;) {
+    ch = parse_char();
+    while(isspace(ch)) { ch = parse_char(); }
+    if(ch == EOF) break;
+    parse_clause(ch, clause, vars);
+    parse_clause(ch, witness, vars);
+    external->push_external_clause_and_witness_on_extension_stack(
+      clause, witness);
+    clause.clear();
+    witness.clear();
+    parsed++;
+  }
+#ifndef QUIET
+  double end = internal->time ();
+  MSG ("parsed %d plain-text clause-witness pairs in %.2f seconds %s time",
+       parsed, end - start, internal->opts.realtime ? "real" : "process");
+#endif
+  return 0;
+}
+
+const char * Parser::parse_binary_reconstruction_stack (int& vars) {
+#ifndef QUIET
+  double start = internal->time ();
+#endif
+  int ch = parse_char(); // Skip initial 0
+  vector<int> clause;
+  vector<int> witness;
+  int parsed = 0;
+  while(ch != EOF) {
+    parse_binary_clause(ch, clause, vars);
+    parse_binary_clause(ch, witness, vars);
+    external->push_external_clause_and_witness_on_extension_stack(
+      clause, witness);
+    parsed++;
+  }
+#ifndef QUIET
+  double end = internal->time ();
+  MSG ("parsed %d binary-format clause-witness pairs in %.2f seconds %s time",
+       parsed, end - start, internal->opts.realtime ? "real" : "process");
+#endif
   return 0;
 }
 

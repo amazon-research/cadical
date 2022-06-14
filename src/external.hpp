@@ -275,6 +275,8 @@ struct External {
 
   // Other important non IPASIR functions.
 
+  void add_original_redundant_clause(const vector<int>& clause, int glue);
+
   /*----------------------------------------------------------------------*/
 
   // Add literal to external constraint.
@@ -308,8 +310,9 @@ struct External {
   // Traversal functions for the witness stack and units.  The explanation
   // in 'external.cpp' for why we have to distinguish these cases.
 
-  bool traverse_all_frozen_units_as_clauses (ClauseIterator &);
+  bool traverse_all_frozen_units_as_clauses (ClauseGlueIterator &);
   bool traverse_all_non_frozen_units_as_witnesses (WitnessIterator &);
+  bool traverse_all_units_as_clauses (ClauseGlueIterator &);
   bool traverse_witnesses_backward (WitnessIterator &);
   bool traverse_witnesses_forward (WitnessIterator &);
 
