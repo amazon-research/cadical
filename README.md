@@ -61,13 +61,13 @@ Armin Biere
 
 Use the following command-line arguments for storing and restoring state (file formats for state are described further down):
 
-- `--ic-out <irredundant-clause-file>`: write irredundant clauses to file `<learned-clause-file>` at startup.
+- `--ic-out <irredundant-clause-file>`: write irredundant clauses to file `<learned-clause-file>` at the end of the solver run.
 - Read irredundant clauses from a file by just passing them as input formula to the solver.
-- `--lc-out <learned-clause-file>`: write learned clauses to file `<learned-clause-file>` after the solver run.
+- `--lc-out <learned-clause-file>`: write learned clauses to file `<learned-clause-file>` at the end of the solver run.
 - `--lc-in <learned-clause-file>`: read learned clauses from file `<learned-clause-file>` at startup.
 - `--rs-out <reconstruction-stack-file>`: write reconstruction stack to file `<reconstruction-stack-file>` at the end of the solver run.
 - `--rs-in <reconstruction-stack-file>`: read reconstruction stack from file `<reconstruction-stack-file>` at startup.
-- `--state-binary`: write state (irredundant clauses, redundant clauses, and reconstruction stack) in binary format, otherwise write them in plain-text format. Also, if set, the reconstruction stack is read in binary format, otherwise it is read in plain-text format. (For irredundant clauses and learned clauses, the file itself contains enough information to distinguish between binary/plain-text, so no explicit flag is needed when reading them.)
+- `--state-binary`: write state (irredundant clauses, redundant clauses, and reconstruction stack) in binary format, otherwise use plain-text format. Also, if `--state-binary` is passed to the solver, the reconstruction stack is read in binary format, otherwise it is read in plain-text format. (For irredundant clauses and learned clauses, the corresponding files contain enough information to distinguish between binary/plain-text, so no explicit flag is needed when reading them.)
 
 
 Example (run CaDiCaL with a timeout of 100 seconds and store state in plain-text format at the end of the solver run):
